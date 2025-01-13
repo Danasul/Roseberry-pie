@@ -1,6 +1,4 @@
-# Roseberry-pie
-# ChatGPT and Raspberry Pi  
-## Smart Chatbot using ChatGPT on Raspberry Pi  
+# Smart Chatbot using ChatGPT on Raspberry Pi  
 
 ### Benefits:
 - **Dynamic Interaction**: The chatbot enables seamless and natural interaction with users.  
