@@ -1,90 +1,110 @@
 import os
-import pyaudio
-import wave
-from google.cloud import speech_v1 as speech
-from google.cloud import texttospeech
 import openai
+import time
+import speech_recognition as sr
+import pyttsx3
+import sounddevice as sd
+import soundfile as sf
+from dotenv import load_dotenv
 
-# Set up API keys
+# Load API Key from .env file
+load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
-google_credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
 
-# Audio settings
-FORMAT = pyaudio.paInt16
-CHANNELS = 1
-RATE = 16000
-CHUNK = 1024
-RECORD_SECONDS = 5
-WAVE_OUTPUT_FILENAME = "output.wav"
+# Initialize the text-to-speech engine
+engine = pyttsx3.init()
+voice = engine.getProperty('voices')[0]
+engine.setProperty('voice', voice.id)
 
-# Google Cloud Speech-to-Text settings
-client = speech.SpeechClient.from_service_account_json(google_credentials_path)
-audio = speech.RecognitionAudio(uri="gs://your-bucket-name/output.wav")
-config = speech.RecognitionConfig(
-    encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-    sample_rate_hertz=16000,
-    language_code="en-US",
-)
+# List available devices
+print("Available devices:")
+print(sd.query_devices())
 
-# Google Cloud Text-to-Speech settings
-tts_client = texttospeech.TextToSpeechClient.from_service_account_json(google_credentials_path)
-voice = texttospeech.VoiceSelectionParams(
-    language_code="en-US",
-    ssml_gender=texttospeech.SsmlVoiceGender.MALE,
-)
-audio_config = texttospeech.AudioConfig(
-    audio_encoding=texttospeech.AudioEncoding.MP3
-)
+# Automatically set the default input/output device
+try:
+    devices = sd.query_devices()
+    input_device_name = "USB PnP Sound Device"
+    output_device_name = "HP Speaker 400"
 
-def record_audio():
-    p = pyaudio.PyAudio()
-    stream = p.open(format=FORMAT, channels=CHANNELS,
-                    rate=RATE, input=True, frames_per_buffer=CHUNK)
-    frames = []
-    print("Recording...")
-    for i in range(0, int(RATE / CHUNK * RECORD_SECONDS)):
-        data = stream.read(CHUNK)
-        frames.append(data)
-    print("Finished recording.")
-    stream.stop_stream()
-    stream.close()
-    p.terminate()
-    wf = wave.open(WAVE_OUTPUT_FILENAME, 'wb')
-    wf.setnchannels(CHANNELS)
-    wf.setsampwidth(p.get_sample_size(FORMAT))
-    wf.setframerate(RATE)
-    wf.writeframes(b''.join(frames))
-    wf.close()
+    input_device = next((i for i, d in enumerate(devices) if input_device_name in d["name"]), None)
+    output_device = next((i for i, d in enumerate(devices) if output_device_name in d["name"]), None)
 
-def transcribe_audio():
-    with open(WAVE_OUTPUT_FILENAME, "rb") as audio_file:
-        content = audio_file.read()
-    audio = speech.RecognitionAudio(content=content)
-    response = client.recognize(config=config, audio=audio)
-    for result in response.results:
-        return result.alternatives[0].transcript
+    if input_device is not None:
+        sd.default.device = (input_device, output_device)
+        print(f"Using input device: {input_device_name} (ID: {input_device})")
+    else:
+        print("⚠️ Warning: Input device not found, using default.")
 
-def generate_response(user_input):
-    response = openai.Completion.create(
-        engine="text-davinci-003",
-        prompt=user_input,
-        max_tokens=150
-    )
-    return response.choices[0].text.strip()
+    if output_device is not None:
+        print(f"Using output device: {output_device_name} (ID: {output_device})")
+    else:
+        print("⚠️ Warning: Output device not found, using default.")
 
-def synthesize_speech(text):
-    synthesis_input = texttospeech.SynthesisInput(text=text)
-    response = tts_client.synthesize_speech(
-        input=synthesis_input, voice=voice, audio_config=audio_config
-    )
-    with open("response.mp3", "wb") as out:
-        out.write(response.audio_content)
-    os.system("mpg321 response.mp3")
+except Exception as e:
+    print(f"Error setting default devices: {e}")
 
+# Function to convert text to speech
+def speak(text):
+    print(f"GPT: {text}")
+    engine.say(text)
+    engine.runAndWait()
+
+# Function to listen for a wake word ("hi")
+def listen_for_wake_word():
+    r = sr.Recognizer()
+    with sr.Microphone() as source:
+        print("Waiting for 'hi'...")
+        while True:
+            try:
+                audio = r.listen(source)
+                text = r.recognize_google(audio).lower()
+                print(f"You said: {text}")
+                if "hi" in text:
+                    speak("Hi, I am your voice assistant. How can I help?")
+                    listen_and_respond()
+                    break
+            except sr.UnknownValueError:
+                continue
+            except sr.RequestError as e:
+                print(f"Error with speech recognition service: {e}")
+                return None
+
+# Function to listen and respond to the user
+def listen_and_respond():
+    r = sr.Recognizer()
+    with sr.Microphone() as source:
+        while True:
+            print("Listening...")
+            try:
+                audio = r.listen(source)
+                text = r.recognize_google(audio).lower()
+                print(f"You said: {text}")
+
+                if "exit" in text:
+                    print("Goodbye!")
+                    speak("Goodbye!")
+                    break
+
+                # Get response from ChatGPT
+                response = chat_with_gpt(text)
+                speak(response)
+
+            except sr.UnknownValueError:
+                print("Could not understand the audio")
+            except sr.RequestError as e:
+                print(f"Speech recognition error: {e}")
+
+# Function to send input to ChatGPT
+def chat_with_gpt(prompt):
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response['choices'][0]['message']['content']
+    except Exception as e:
+        return f"Error communicating with OpenAI API: {e}"
+
+# Main loop: Wait for "hi" before starting conversation
 if _name_ == "_main_":
-    record_audio()
-    user_input = transcribe_audio()
-    print(f"User: {user_input}")
-    bot_response = generate_response(user_input)
-    print(f"Bot: {bot_response}")
-    synthesize_speech(bot_response)
+    listen_for_wake_word()
